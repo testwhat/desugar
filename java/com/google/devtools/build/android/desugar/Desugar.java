@@ -108,6 +108,13 @@ class Desugar {
       help = "Minimum targeted sdk version.  If >= 24, enables default methods in interfaces."
     )
     public int minSdkVersion;
+
+    @Option(name = "core_library",
+        defaultValue = "false",
+        category = "misc",
+        abbrev = 'c',
+        help = "Enables rewriting to desugar java.* classes.")
+    public boolean coreLibrary;
   }
 
   public static void main(String[] args) throws Exception {
@@ -147,13 +154,22 @@ class Desugar {
       parent = new ThrowingClassLoader();
     }
 
+    String prefix = "";
+    if (options.coreLibrary) {
+      prefix = "__desugar__/";
+    }
+    CoreLibraryRewriter rewriter = new CoreLibraryRewriter(prefix);
+
     ClassLoader loader =
-        createClassLoader(options.bootclasspath, options.inputJar, options.classpath, parent);
+        createClassLoader(
+            rewriter, options.bootclasspath, options.inputJar, options.classpath, parent);
+
     try (ZipFile in = new ZipFile(options.inputJar.toFile());
         ZipOutputStream out = new ZipOutputStream(new BufferedOutputStream(
             Files.newOutputStream(options.outputJar)))) {
       LambdaClassMaker lambdas = new LambdaClassMaker(dumpDirectory);
-      ClassReaderFactory readerFactory = new ClassReaderFactory(in);
+      ClassReaderFactory readerFactory = new ClassReaderFactory(in, rewriter);
+
       ImmutableSet.Builder<String> interfaceLambdaMethodCollector = ImmutableSet.builder();
 
       // Process input Jar, desugaring as we go
@@ -164,17 +180,27 @@ class Desugar {
           // Android anyways. Resources are written as they were in the input jar to avoid any
           // danger of accidentally uncompressed resources ending up in an .apk.
           if (entry.getName().endsWith(".class")) {
-            ClassReader reader = new ClassReader(content);
-            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS /*for bridge methods*/);
+            ClassReader reader = rewriter.reader(content);
+            CoreLibraryRewriter.Writer writer =
+                rewriter.writer(ClassWriter.COMPUTE_MAXS /*for bridge methods*/);
             ClassVisitor visitor = writer;
             if (!allowDefaultMethods) {
               visitor = new Java7Compatibility(visitor, readerFactory);
             }
-            reader.accept(
-                new LambdaDesugaring(
-                    visitor, loader, lambdas, interfaceLambdaMethodCollector, allowDefaultMethods),
-                0);
-            writeStoredEntry(out, entry.getName(), writer.toByteArray());
+
+            visitor = new LambdaDesugaring(
+                    visitor,
+                    loader,
+                    lambdas,
+                    interfaceLambdaMethodCollector,
+                    allowDefaultMethods);
+
+            reader.accept(visitor, 0);
+
+            String name = entry.getName();
+            name = rewriter.unprefix(name);
+
+            writeStoredEntry(out, name, writer.toByteArray());
           } else {
             // TODO(bazel-team): Avoid de- and re-compressing resource files
             ZipEntry destEntry = new ZipEntry(entry);
@@ -196,13 +222,16 @@ class Desugar {
       for (Map.Entry<Path, LambdaInfo> lambdaClass : lambdas.drain().entrySet()) {
         try (InputStream bytecode =
             Files.newInputStream(dumpDirectory.resolve(lambdaClass.getKey()))) {
-          ClassReader reader = new ClassReader(bytecode);
-          ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS /*for invoking bridges*/);
+          ClassReader reader = rewriter.reader(bytecode);
+          CoreLibraryRewriter.Writer writer =
+              rewriter.writer(ClassWriter.COMPUTE_MAXS /*for invoking bridges*/);
           ClassVisitor visitor = writer;
+
           if (!allowDefaultMethods) {
             // null ClassReaderFactory b/c we don't expect to need it for lambda classes
-            visitor = new Java7Compatibility(visitor, (ClassReaderFactory) null);
+            visitor = new Java7Compatibility(visitor, null);
           }
+
           LambdaClassFixer lambdaFixer =
               new LambdaClassFixer(
                   visitor,
@@ -214,7 +243,9 @@ class Desugar {
           // instructions in generated lambda classes (checkState below will fail)
           reader.accept(
               new LambdaDesugaring(lambdaFixer, loader, lambdas, null, allowDefaultMethods), 0);
-          writeStoredEntry(out, lambdaFixer.getInternalName() + ".class", writer.toByteArray());
+          String name = lambdaFixer.getInternalName() + ".class";
+          name = rewriter.unprefix(name);
+          writeStoredEntry(out, name, writer.toByteArray());
         }
       }
 
@@ -242,8 +273,9 @@ class Desugar {
     out.closeEntry();
   }
 
-  private static ClassLoader createClassLoader(List<Path> bootclasspath, Path inputJar,
-      List<Path> classpath, ClassLoader parent) throws IOException {
+  private static ClassLoader createClassLoader(CoreLibraryRewriter rewriter,
+      List<Path> bootclasspath, Path inputJar, List<Path> classpath,
+      ClassLoader parent) throws IOException {
     // Prepend classpath with input jar itself so LambdaDesugaring can load classes with lambdas.
     // Note that inputJar and classpath need to be in the same classloader because we typically get
     // the header Jar for inputJar on the classpath and having the header Jar in a parent loader
@@ -252,9 +284,9 @@ class Desugar {
     // Use a classloader that as much as possible uses the provided bootclasspath instead of
     // the tool's system classloader.  Unfortunately we can't do that for java. classes.
     if (!bootclasspath.isEmpty()) {
-      parent = HeaderClassLoader.fromClassPath(bootclasspath, parent);
+      parent = HeaderClassLoader.fromClassPath(bootclasspath, rewriter, parent);
     }
-    return HeaderClassLoader.fromClassPath(classpath, parent);
+    return HeaderClassLoader.fromClassPath(classpath, rewriter, parent);
   }
 
   private static class ThrowingClassLoader extends ClassLoader {
