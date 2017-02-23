@@ -42,12 +42,11 @@ import org.objectweb.asm.Opcodes;
 class HeaderClassLoader extends ClassLoader {
 
   private final Map<String, JarFile> jarfiles;
-  private final CoreLibraryRewriter rewriter;
 
   /** Creates a classloader from the given classpath with the given parent. */
-  public static HeaderClassLoader fromClassPath(
-      List<Path> classpath, CoreLibraryRewriter rewriter, ClassLoader parent) throws IOException {
-    return new HeaderClassLoader(indexJars(classpath), rewriter, parent);
+  public static HeaderClassLoader fromClassPath(List<Path> classpath, ClassLoader parent)
+      throws IOException {
+    return new HeaderClassLoader(indexJars(classpath), parent);
   }
 
   /**
@@ -68,17 +67,14 @@ class HeaderClassLoader extends ClassLoader {
     return result;
   }
 
-  private HeaderClassLoader(
-      Map<String, JarFile> jarfiles, CoreLibraryRewriter rewriter, ClassLoader parent) {
+  private HeaderClassLoader(Map<String, JarFile> jarfiles, ClassLoader parent) {
     super(parent);
-    this.rewriter = rewriter;
     this.jarfiles = jarfiles;
   }
 
   @Override
   protected Class<?> findClass(String name) throws ClassNotFoundException {
     String filename = name.replace('.', '/') + ".class";
-    filename = rewriter.unprefix(filename);
     JarFile jarfile = jarfiles.get(filename);
     if (jarfile == null) {
       throw new ClassNotFoundException();
@@ -86,7 +82,7 @@ class HeaderClassLoader extends ClassLoader {
     ZipEntry entry = jarfile.getEntry(filename);
     byte[] bytecode;
     try (InputStream content = jarfile.getInputStream(entry)) {
-      ClassReader reader = rewriter.reader(content);
+      ClassReader reader = new ClassReader(content);
       // Have ASM compute maxs so we don't need to figure out how many formal parameters there are
       ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
       reader.accept(new CodeStubber(writer), 0);
