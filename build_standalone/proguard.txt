@@ -1,0 +1,11 @@
+#-injars in.jar
+#-outjars out.jar
+#-libraryjars '<java.home>/lib/rt.jar'; 'libs/auto-value-1.4.1.jar'
+-dontobfuscate
+-dontoptimize
+-keepattributes '*Annotation*', 'Signature'
+-keep class com.google.devtools.** { *; }
+#-keep class com.google.devtools.build.android.desugar.Desugar { public static void main(java.lang.String[]); }
+-keepclassmembers enum * { public static **[] values(); public static ** valueOf(java.lang.String); }
+-dontwarn 'com.google.common.**', 'autovalue.shaded.com.google$.**'
+-dontnote '*.**'

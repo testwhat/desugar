@@ -1,10 +1,12 @@
-<project default="compile">
+<project name="desugar" default="compile">
     <property name="src" location="../java" />
     <property name="bin" location="bin" />
     <property name="build" location="build" />
     <property name="libs" location="libs" />
     <property name="java.source" value="1.8" />
     <property name="java.target" value="1.8" />
+    <property name="script-location" value="${ant.file.desugar}" />
+    <dirname file="${script-location}" property="this.dir" />
 
     <target name="compile">
         <mkdir dir="${bin}" />
@@ -25,13 +27,26 @@
         </javac>
     </target>
 
-    <target name="jar"  depends="compile">
-        <jar jarfile="${build}/desugar.jar" basedir="${bin}" filesetmanifest="merge" duplicate="preserve">
+    <target name="jar" depends="compile">
+        <jar jarfile="${build}/desugar_fat.jar" basedir="${bin}" filesetmanifest="merge" duplicate="preserve">
             <manifest>
                 <attribute name="Main-Class" value="com.google.devtools.build.android.desugar.Desugar" />
             </manifest>
             <zipgroupfileset dir="${libs}" includes="*.jar" />
         </jar>
+    </target>
+
+    <!--
+        Usage of desugar:
+        java -jar desugar.jar --input input.jar --output output.jar --bootclasspath_entry "a.jar" --bootclasspath_entry "b.jar"
+    -->
+    <target name="proguard" depends="jar">
+        <java failonerror="true" fork="true" jar="${this.dir}/proguard.jar">
+            <arg value="-injars ${build}/desugar_fat.jar" />
+            <arg value="-outjars ${build}/desugar.jar" />
+            <arg value="-libraryjars '${java.home}/lib/rt.jar'; '${libs}/auto-value-1.4.1.jar'" />
+            <arg value="@${this.dir}/proguard.txt"/>
+        </java>
     </target>
 
     <target name="clean">
